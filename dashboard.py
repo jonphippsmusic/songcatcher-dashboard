@@ -72,6 +72,7 @@ st.set_page_config(
     page_title="Song Catcher Dashboard",
     page_icon="🎧",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown(
@@ -238,27 +239,28 @@ def get_detection_search_payload(base_url: str, params: dict, detection_source: 
         if unfiltered_payload is not None and unfiltered_payload.get("metadata_source") != "promoted_fallback":
             unfiltered = unfiltered_payload.get("detections", [])
 
-        combined = []
-        seen = set()
+        def mark_detection_group(items, group_name):
+            marked = []
+            for item in items:
+                detection = dict(item)
+                detection["_dashboard_source_group"] = group_name
+                marked.append(detection)
+            return marked
 
-        for detection in unfiltered + promoted:
-            key = (
-                detection.get("station_id"),
-                detection.get("detected_at"),
-                detection.get("common_name"),
-                detection.get("scientific_name"),
-                detection.get("confidence"),
-                detection.get("metadata_source"),
-                detection.get("source"),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            combined.append(detection)
+        promoted_marked = mark_detection_group(promoted, "promoted")
+        unfiltered_marked = mark_detection_group(unfiltered, "unfiltered")
 
-        combined = sort_detections_newest_first(combined, requested_limit)
+        promoted_marked = sort_detections_newest_first(promoted_marked, requested_limit)
+        unfiltered_marked = sort_detections_newest_first(unfiltered_marked, requested_limit)
+
+        # For the combined card view, promoted detections should remain visually distinct
+        # and appear before unfiltered metadata. Tables/metrics still use the combined set.
+        combined = (promoted_marked + unfiltered_marked)[:requested_limit]
+
         return {
             "detections": combined,
+            "promoted_detections": promoted_marked,
+            "unfiltered_detections": unfiltered_marked,
             "metadata_source": "combined",
         }
 
@@ -1156,15 +1158,11 @@ def render_top_species_visual(df: pd.DataFrame, top_n: int, interval: str):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_hourly_circular_plot(df: pd.DataFrame):
-    st.subheader("Circular detections by hour")
-
-    if not require_plotly() or df.empty:
-        st.info("No detection data available for this visualisation.")
-        return
+def render_single_hourly_circular_plot(day_df: pd.DataFrame, metric: str, title: str, chart_key: str):
+    value_col = "detections" if metric == "Detections" else "species_count"
 
     hourly = (
-        df.groupby("hour", as_index=False)
+        day_df.groupby("hour", as_index=False)
         .agg(detections=("id", "count"), species_count=("common_name", "nunique"))
         .sort_values("hour")
     )
@@ -1173,14 +1171,6 @@ def render_hourly_circular_plot(df: pd.DataFrame):
     hourly = all_hours.merge(hourly, on="hour", how="left").fillna({"detections": 0, "species_count": 0})
     hourly["theta"] = hourly["hour"] * 15
     hourly["label"] = hourly["hour"].map(lambda h: f"{h:02d}:00")
-
-    metric = st.radio(
-        "Circular plot metric",
-        ["Detections", "Distinct species"],
-        horizontal=True,
-        key="circular_metric",
-    )
-    value_col = "detections" if metric == "Detections" else "species_count"
 
     fig = go.Figure(
         data=[
@@ -1200,7 +1190,7 @@ def render_hourly_circular_plot(df: pd.DataFrame):
         ]
     )
     fig.update_layout(
-        title=f"{metric} by hour",
+        title=title,
         polar=dict(
             angularaxis=dict(
                 tickmode="array",
@@ -1214,9 +1204,51 @@ def render_hourly_circular_plot(df: pd.DataFrame):
                 showline=False,
             )
         ),
-        height=560,
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=20),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def render_hourly_circular_plot(df: pd.DataFrame):
+    st.subheader("Circular detections by hour — last 7 days")
+
+    if not require_plotly() or df.empty:
+        st.info("No detection data available for this visualisation.")
+        return
+
+    if "detected_at_dt" not in df.columns:
+        st.info("No timestamped detection data available for this visualisation.")
+        return
+
+    plot_base = df.dropna(subset=["detected_at_dt", "hour"]).copy()
+    if plot_base.empty:
+        st.info("No timestamped detection data available for this visualisation.")
+        return
+
+    plot_base["detected_date"] = plot_base["detected_at_dt"].dt.date
+    latest_date = plot_base["detected_date"].max()
+    start_date = latest_date - timedelta(days=6)
+    last_week_dates = [start_date + timedelta(days=i) for i in range(7)]
+    plot_base = plot_base[plot_base["detected_date"].isin(last_week_dates)].copy()
+
+    metric = st.radio(
+        "Circular plot metric",
+        ["Detections", "Distinct species"],
+        horizontal=True,
+        key="circular_metric",
+    )
+
+    st.caption(
+        "Seven daily circular charts are shown for the latest seven dates available in the filtered detection set."
+    )
+
+    columns = st.columns(2)
+    for index, day in enumerate(last_week_dates):
+        day_df = plot_base[plot_base["detected_date"] == day].copy()
+        title = f"{metric} by hour — {day.strftime('%d/%m/%y')}"
+        with columns[index % 2]:
+            render_single_hourly_circular_plot(day_df, metric, title, f"circular_hourly_{day.isoformat()}_{metric}")
 
 
 def render_hour_day_heatmap(df: pd.DataFrame):
@@ -2212,8 +2244,8 @@ def main():
         if not selected_station_ids:
             st.warning("Select at least one station.")
             st.stop()
-        min_confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.85, 0.01)
-        max_results = st.slider("Maximum results", 10, 10000, 10000, 10)
+        min_confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.50, 0.01)
+        max_results = st.slider("Maximum results", 10, 20000, 20000, 100)
 
         default_from = date(2026, 5, 20)
         date_from = uk_date_input("From date", value=default_from, key="date_from")
@@ -2338,15 +2370,44 @@ def main():
                 render_latest_detections_html_table(table_df)
 
             if show_cards:
-                for detection in detections:
-                    render_detection_card(
-                        api_url,
-                        detection,
-                        sonogram_mode=sonogram_mode,
-                        audio_mode=audio_mode,
-                        sonogram_frequency_range=sonogram_frequency_range,
-                        sonogram_contrast=sonogram_contrast,
-                    )
+                def render_detection_cards_section(title: str, section_detections: list[dict]):
+                    st.subheader(title)
+                    if not section_detections:
+                        st.info(f"No {title.lower()} match the current filters.")
+                        return
+                    for detection in section_detections:
+                        render_detection_card(
+                            api_url,
+                            detection,
+                            sonogram_mode=sonogram_mode,
+                            audio_mode=audio_mode,
+                            sonogram_frequency_range=sonogram_frequency_range,
+                            sonogram_contrast=sonogram_contrast,
+                        )
+
+                if detection_source in {"Combined promoted + unfiltered", "Combined promoted + unfiltered metadata"}:
+                    promoted_cards = [
+                        detection for detection in detections
+                        if detection.get("_dashboard_source_group") == "promoted"
+                    ]
+                    unfiltered_cards = [
+                        detection for detection in detections
+                        if detection.get("_dashboard_source_group") == "unfiltered"
+                    ]
+
+                    render_detection_cards_section("Promoted detections", promoted_cards)
+                    st.divider()
+                    render_detection_cards_section("Unfiltered metadata detections", unfiltered_cards)
+                else:
+                    for detection in detections:
+                        render_detection_card(
+                            api_url,
+                            detection,
+                            sonogram_mode=sonogram_mode,
+                            audio_mode=audio_mode,
+                            sonogram_frequency_range=sonogram_frequency_range,
+                            sonogram_contrast=sonogram_contrast,
+                        )
 
     with tab_visuals:
         st.header("Detection visualisations")
