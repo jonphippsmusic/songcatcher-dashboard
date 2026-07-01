@@ -2245,15 +2245,16 @@ def main():
             st.warning("Select at least one station.")
             st.stop()
         min_confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.50, 0.01)
-        max_results = st.slider("Maximum results", 10, 20000, 20000, 100)
+        max_results = st.slider("Maximum results", 10, 20000, 10000, 100)
 
-        default_from = date(2026, 5, 20)
+        default_to = date.today()
+        default_from = default_to - timedelta(days=6)
         date_from = uk_date_input("From date", value=default_from, key="date_from")
-        date_to = uk_date_input("To date", value=date.today(), key="date_to")
+        date_to = uk_date_input("To date", value=default_to, key="date_to")
 
         show_cards = st.toggle("Show detection cards", value=True)
         show_table = st.toggle("Show table", value=True)
-        show_3d = st.toggle("Enable 3D visualisations", value=True)
+        show_3d = st.toggle("Enable 3D visualisations", value=False)
 
         st.header("Media display")
         sonogram_mode = st.selectbox(
