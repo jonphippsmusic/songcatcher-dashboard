@@ -68,6 +68,47 @@ REQUEST_TIMEOUT = 20
 WIKIPEDIA_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
 DISPLAY_LOCATION_NAME = "BirdNET-Pi - Arise Initiative - Dungeness"
 
+FLAGSHIP_SPECIES_GROUPS = {
+    "Bittern": ["Bittern", "Eurasian Bittern", "Great Bittern"],
+    "Hobby": ["Hobby", "Eurasian Hobby"],
+    "Common Tern": ["Common Tern"],
+    "Reed Warbler": ["Reed Warbler", "Eurasian Reed Warbler", "Common Reed Warbler"],
+    "Lapwing": ["Lapwing", "Northern Lapwing"],
+}
+
+
+def normalise_species_option(value: str) -> str:
+    return " ".join(str(value or "").strip().casefold().replace("-", " ").split())
+
+
+def resolve_flagship_species_options(species_options: list[str]) -> tuple[list[str], list[str]]:
+    """Return available dashboard species names matching the flagship species list.
+
+    The team-facing names are deliberately broad UK names, while BirdNET commonly
+    returns regional/common names such as Eurasian Reed Warbler or Northern Lapwing.
+    This resolver maps the team labels onto whatever matching names exist in the
+    current filtered data.
+    """
+    option_by_normalised = {normalise_species_option(option): option for option in species_options}
+    selected: list[str] = []
+    missing: list[str] = []
+
+    for group_label, aliases in FLAGSHIP_SPECIES_GROUPS.items():
+        matched = []
+        for alias in aliases:
+            option = option_by_normalised.get(normalise_species_option(alias))
+            if option and option not in matched:
+                matched.append(option)
+
+        if matched:
+            for option in matched:
+                if option not in selected:
+                    selected.append(option)
+        else:
+            missing.append(group_label)
+
+    return selected, missing
+
 st.set_page_config(
     page_title="Song Catcher Dashboard",
     page_icon="🎧",
@@ -2201,6 +2242,7 @@ def main():
 
     with st.sidebar:
         st.header("API")
+        st.caption("Dashboard build: flagship-species 2026-07-02")
         st.caption(f"Connected to: {api_url}")
         if st.button("Change API URL"):
             st.session_state["api_url"] = ""
@@ -2318,16 +2360,48 @@ def main():
     if not df.empty and "common_name" in df.columns:
         species_options = sorted(df["common_name"].dropna().astype(str).unique().tolist())
         with species_filter_placeholder.container():
+            flagship_species, missing_flagship_species = resolve_flagship_species_options(species_options)
+
+            current_selected_species = st.session_state.get("selected_species_filter", [])
+            st.session_state["selected_species_filter"] = [
+                species for species in current_selected_species if species in species_options
+            ]
+            current_excluded_species = st.session_state.get("excluded_species_filter", [])
+            st.session_state["excluded_species_filter"] = [
+                species for species in current_excluded_species if species in species_options
+            ]
+
+            flagship_col, clear_col = st.columns(2)
+            with flagship_col:
+                if st.button(
+                    "Select flagship species",
+                    key="select_flagship_species_button",
+                    disabled=not flagship_species,
+                    help="Select Bittern, Hobby, Common Tern, Reed Warbler and Lapwing where those species are present in the current filtered data.",
+                ):
+                    st.session_state["selected_species_filter"] = flagship_species
+                    st.rerun()
+            with clear_col:
+                if st.button("Clear species filter", key="clear_species_filter_button"):
+                    st.session_state["selected_species_filter"] = []
+                    st.rerun()
+
+            if missing_flagship_species:
+                st.caption(
+                    "Flagship species not currently present in the loaded results: "
+                    + ", ".join(missing_flagship_species)
+                )
+
             selected_species = st.multiselect(
                 "Include species",
                 options=species_options,
-                default=[],
-                help="Leave blank to include all species before applying the exclusion filter.",
+                key="selected_species_filter",
+                help="Leave blank to include all species before applying the exclusion filter. Use the flagship button to select Bittern, Hobby, Common Tern, Reed Warbler and Lapwing in one click.",
             )
             excluded_species = st.multiselect(
                 "Exclude species",
                 options=species_options,
-                default=[],
+                key="excluded_species_filter",
                 help="Species selected here are removed from the dashboard even if they also appear in the include filter.",
             )
             st.caption("Permanently excluded from all views: Common Redstart")
