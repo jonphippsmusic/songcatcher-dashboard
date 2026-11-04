@@ -10,6 +10,7 @@ from urllib.parse import quote, urljoin, urlparse
 import pandas as pd
 import requests
 import streamlit as st
+from habitatlens_dashboard import render_habitatlens_tab
 
 try:
     from PIL import Image, ImageEnhance, ImageOps
@@ -2427,8 +2428,8 @@ def main():
     render_metric_row(detections, status)
     st.caption(f"Detection source: {detection_source}")
 
-    tab_latest, tab_visuals, tab_summary, tab_species, tab_status, tab_about = st.tabs(
-        ["Latest detections", "Visualisations", "Summaries", "Species", "Station status", "About"]
+    tab_latest, tab_visuals, tab_summary, tab_species, tab_status, tab_habitatlens, tab_about = st.tabs(
+        ["Latest detections", "Visualisations", "Summaries", "Species", "Station status", "HabitatLens", "About"]
     )
 
     with tab_latest:
@@ -2581,6 +2582,15 @@ def main():
                     with icon_cols[index % 4]:
                         st.write(row["common_name"])
                         render_wikipedia_icon(row.get("common_name"), row.get("scientific_name"), size_px=104)
+
+    with tab_habitatlens:
+        render_habitatlens_tab(
+            api_url=api_url,
+            selected_station_ids=selected_station_ids,
+            date_from=date_from,
+            date_to=date_to,
+            api_get=api_get,
+        )
 
     with tab_about:
         st.header("About this dashboard")
